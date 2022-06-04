@@ -8,7 +8,7 @@ A Hybrid Approach to Co-Creative Story Authoring Using Grammars and Language Mod
 4. run
 
 # Pretrained-Models
-Coming soon
+Download: https://drive.google.com/drive/folders/1k_soPZWP6ryfCDcszCzpwzVa03mqnd-0?usp=sharing
 
 # Video Demo
 https://youtu.be/pUbJb09bzCQ
