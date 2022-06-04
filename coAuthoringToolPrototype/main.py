@@ -7,12 +7,13 @@ from tracery.modifiers import base_english
 import json
 import tkinter as tk
 import torch
+import argparse
 
-def run_classifier(inputText, candidate_labels, outputLabels, hypothesis_template, threshold, multilabel):
+def run_classifier(inputText, candidate_labels, outputLabels, hypothesis_template, threshold, multilabel, args):
 
     outputText = ''
 
-    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
         classifier = pipeline("zero-shot-classification",
                               model="facebook/bart-large-mnli", low_cpu_mem_usage=True, device=torch.cuda.current_device())
     else:
@@ -32,15 +33,18 @@ def run_classifier(inputText, candidate_labels, outputLabels, hypothesis_templat
     return outputText[:-1]
 
 
-def run_generator(inText):
+def run_generator(inText, args):
 
     tokenizer = AutoTokenizer.from_pretrained("models/gpt2_stage0")
 
     model = AutoModelForCausalLM.from_pretrained("models/gpt2_stage0", low_cpu_mem_usage=True)
 
-    encoded_text = tokenizer.encode('<|STORY|>'+inText, add_special_tokens=False, return_tensors="pt")
+    if inText == '':
+        inText = '<|endoftext|>'
 
-    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+    encoded_text = tokenizer.encode(inText, add_special_tokens=False, return_tensors="pt")
+
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
         model = model.to(torch.cuda.current_device())
         encoded_text = encoded_text.to(torch.cuda.current_device())
 
@@ -55,7 +59,7 @@ def run_generator(inText):
 
     return outText
 
-def run_progressive_generation(inputStr):
+def run_progressive_generation(inputStr, args):
     tokenizer1 = BartTokenizer.from_pretrained('models/bart_stage1')
     model1 = BartForConditionalGeneration.from_pretrained('models/bart_stage1', low_cpu_mem_usage=True)
 
@@ -64,7 +68,7 @@ def run_progressive_generation(inputStr):
 
     inputs1 = tokenizer1.batch_encode_plus(['<|startofcond|>'+inputStr], return_tensors='pt')
 
-    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
         model1 = model1.to(torch.cuda.current_device())
         inputs1 = inputs1.to(torch.cuda.current_device())
 
@@ -74,7 +78,7 @@ def run_progressive_generation(inputStr):
 
     inputs2 = tokenizer2.batch_encode_plus([text], return_tensors='pt')
 
-    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
         model2 = model2.to(torch.cuda.current_device())
         inputs2 = inputs2.to(torch.cuda.current_device())
 
@@ -115,8 +119,11 @@ def make_editor_window():
     return sg.Window('Editor', editorLayout, resizable=True, finalize=True, auto_size_text=True)
 
 
+# taken from the transformers library
+parser = argparse.ArgumentParser()
 
-
+parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
+args = parser.parse_args()
 
 sg.theme('DarkBlue')   # Add a touch of color
 
@@ -186,7 +193,7 @@ while True:
 
 
         if values['Classifier Output'] != '' and len(labels) and len(inValues):
-            classifierWindow["Classifier Output"].update(run_classifier(inValues, labels, outLabels, hTemplate, tHold, mLabel))
+            classifierWindow["Classifier Output"].update(run_classifier(inValues, labels, outLabels, hTemplate, tHold, mLabel, args))
 
 
     elif window == classifierWindow and event == 'Add Label':
@@ -226,7 +233,7 @@ while True:
 
     if window == generatorWindow and event == 'Generate':
 
-        generatorWindow["Generator"].update(run_generator(values["Generator"]))
+        generatorWindow["Generator"].update(run_generator(values["Generator"], args))
 
     elif window == generatorWindow and event == '<|sepofcond|>':
         generatorWindow['Generator'].Widget.insert(generatorWindow['Generator'].Widget.index(tk.INSERT), '<|sepofcond|>')
@@ -255,7 +262,7 @@ while True:
 
         try:
             editorWindow['Text Editor'].Widget.insert(editorWindow['Text Editor'].Widget.index(tk.INSERT),
-                                                  run_progressive_generation(editorWindow['Text Editor'].Widget.selection_get()))
+                                                  run_progressive_generation(editorWindow['Text Editor'].Widget.selection_get(), args))
         except:
             editorWindow['Text Editor'].Widget.insert(editorWindow['Text Editor'].Widget.index(tk.INSERT),
                                                       'ERROR')
