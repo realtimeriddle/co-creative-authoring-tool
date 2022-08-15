@@ -33,7 +33,7 @@ def run_classifier(inputText, candidate_labels, outputLabels, hypothesis_templat
     return outputText[:-1]
 
 
-def run_generator(inText, args):
+def run_generator(inText, args, num_beams, do_sample, top_k, top_p, length, repetition_penalty, no_repeat_ngram_size, temperature):
 
     tokenizer = AutoTokenizer.from_pretrained("models/gpt2_stage0")
 
@@ -48,9 +48,9 @@ def run_generator(inText, args):
         model = model.to(torch.cuda.current_device())
         encoded_text = encoded_text.to(torch.cuda.current_device())
 
-    generated_text = model.generate(input_ids=encoded_text, num_beams=2, do_sample=True, top_k=25, top_p=1.0,
-                                    max_length=100 + len(encoded_text[0]), min_length=100 + len(encoded_text[0]),
-                                    repetition_penalty=1.3, no_repeat_ngram_size=3, temperature=1.0)
+    generated_text = model.generate(input_ids=encoded_text, num_beams=int(num_beams), do_sample=do_sample, top_k=int(top_k), top_p=top_p,
+                                    max_length=int(length) + len(encoded_text[0]), min_length=int(length) + len(encoded_text[0]),
+                                    repetition_penalty=repetition_penalty, no_repeat_ngram_size=int(no_repeat_ngram_size), temperature=temperature)
 
     if len(generated_text.shape) > 2:
         generated_text.squeeze_()
@@ -60,33 +60,158 @@ def run_generator(inText, args):
     return outText
 
 def run_progressive_generation(inputStr, args):
+    ENCODED_MAX = 100
+    startingPoint = 0
+
     tokenizer1 = BartTokenizer.from_pretrained('models/bart_stage1')
     model1 = BartForConditionalGeneration.from_pretrained('models/bart_stage1', low_cpu_mem_usage=True)
 
     tokenizer2 = BartTokenizer.from_pretrained('models/bart_stage2')
     model2 = BartForConditionalGeneration.from_pretrained('models/bart_stage2', low_cpu_mem_usage=True)
 
-    inputs1 = tokenizer1.batch_encode_plus(['<|startofcond|>'+inputStr], return_tensors='pt')
+    temp_encoded = tokenizer1.encode(inputStr, add_special_tokens=False)
 
-    if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
-        model1 = model1.to(torch.cuda.current_device())
-        inputs1 = inputs1.to(torch.cuda.current_device())
+    if len(temp_encoded) <= ENCODED_MAX and \
+            (tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0] in temp_encoded or \
+             tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0] in temp_encoded):
 
-    output_ids = model1.generate(inputs1['input_ids'], num_beams=2, early_stopping=True)
+        inputs1 = tokenizer1.batch_encode_plus(['<|startofcond|>'+inputStr], return_tensors='pt')
 
-    text = tokenizer1.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace('<s>', '')
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
+            model1 = model1.to(torch.cuda.current_device())
+            inputs1 = inputs1.to(torch.cuda.current_device())
 
-    inputs2 = tokenizer2.batch_encode_plus([text], return_tensors='pt')
+        output_ids = model1.generate(inputs1['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
 
-    if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
-        model2 = model2.to(torch.cuda.current_device())
-        inputs2 = inputs2.to(torch.cuda.current_device())
+        text = tokenizer1.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace('<s>', '')
 
-    output_ids = model2.generate(inputs2['input_ids'], num_beams=2, early_stopping=True)
+        inputs2 = tokenizer2.batch_encode_plus([text], return_tensors='pt')
 
-    outStr = tokenizer2.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace('<s>', '')
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
+            model2 = model2.to(torch.cuda.current_device())
+            inputs2 = inputs2.to(torch.cuda.current_device())
 
-    return outStr
+        output_ids = model2.generate(inputs2['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
+
+        outStr = tokenizer2.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace('<s>', '')
+
+        return outStr
+
+    elif len(temp_encoded) > ENCODED_MAX and \
+            (tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0] in temp_encoded or \
+             tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0] in temp_encoded):
+
+        while tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0] in temp_encoded or \
+                tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0] in temp_encoded:
+
+            toProcess = None
+            beginning = None
+
+            if (tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0] in temp_encoded and \
+                    tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0] in temp_encoded):
+
+                if temp_encoded.index(tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0]) < \
+                        temp_encoded.index(tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0]):
+
+                    startingPoint = temp_encoded.index(
+                        tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0])
+
+                else:
+                    startingPoint = temp_encoded.index(
+                        tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0])
+
+            elif tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0] in temp_encoded:
+
+                startingPoint = temp_encoded.index(
+                    tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0])
+
+            elif tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0] in temp_encoded:
+
+                startingPoint = temp_encoded.index(
+                    tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0])
+
+            if startingPoint <= ENCODED_MAX / 2:
+                toProcess = temp_encoded[:ENCODED_MAX]
+                temp_encoded = temp_encoded[ENCODED_MAX:]
+
+            else:
+
+                if len(temp_encoded) <= (startingPoint + 1 + (ENCODED_MAX / 2)):
+                    beginning = temp_encoded[:int(startingPoint - (ENCODED_MAX / 2))]
+                    toProcess = temp_encoded[int(startingPoint - (ENCODED_MAX / 2)):]
+                    temp_encoded = None
+                else:
+                    beginning = temp_encoded[:int(startingPoint - (ENCODED_MAX / 2))]
+                    print(int(startingPoint - (ENCODED_MAX / 2)))
+                    print((startingPoint + (ENCODED_MAX / 2)))
+                    print(temp_encoded)
+                    toProcess = temp_encoded[int(startingPoint - (ENCODED_MAX / 2)):int(startingPoint + (ENCODED_MAX / 2))]
+                    temp_encoded = temp_encoded[int(startingPoint + (ENCODED_MAX / 2)):]
+
+            text = tokenizer1.decode(toProcess)
+
+            inputs1 = tokenizer1.batch_encode_plus(['<|startofcond|>' + text], return_tensors='pt')
+
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
+                model1 = model1.to(torch.cuda.current_device())
+                inputs1 = inputs1.to(torch.cuda.current_device())
+
+            output_ids = model1.generate(inputs1['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
+
+            text = tokenizer1.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace(
+                '<s>', '')
+
+            inputs2 = tokenizer2.batch_encode_plus([text], return_tensors='pt')
+
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
+                model2 = model2.to(torch.cuda.current_device())
+                inputs2 = inputs2.to(torch.cuda.current_device())
+
+            output_ids = model2.generate(inputs2['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
+
+            out = tokenizer2.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace(
+                '<s>', '')
+
+            if beginning is not None and temp_encoded is not None:
+                temp_encoded = beginning + tokenizer1.encode(out, add_special_tokens=False) + temp_encoded
+            elif beginning is not None and temp_encoded is None:
+                temp_encoded = beginning + tokenizer1.encode(out, add_special_tokens=False)
+            elif beginning is None and temp_encoded is not None:
+                temp_encoded = tokenizer1.encode(out, add_special_tokens=False) + temp_encoded
+
+        outStr = tokenizer1.decode(temp_encoded)
+
+        return outStr
+
+    else:
+        if len(temp_encoded) > ENCODED_MAX:
+            temp_encoded = temp_encoded[-ENCODED_MAX:]
+
+        inputStr = tokenizer1.decode(temp_encoded)
+
+        inputs1 = tokenizer1.batch_encode_plus(['<|startofcond|>' + inputStr], return_tensors='pt')
+
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
+            model1 = model1.to(torch.cuda.current_device())
+            inputs1 = inputs1.to(torch.cuda.current_device())
+
+        output_ids = model1.generate(inputs1['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
+
+        text = tokenizer1.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace('<s>',
+                                                                                                               '')
+
+        inputs2 = tokenizer2.batch_encode_plus([text], return_tensors='pt')
+
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
+            model2 = model2.to(torch.cuda.current_device())
+            inputs2 = inputs2.to(torch.cuda.current_device())
+
+        output_ids = model2.generate(inputs2['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
+
+        outStr = tokenizer2.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace('<s>',
+                                                                                                                 '')
+
+        return outStr
 
 
 
@@ -102,7 +227,14 @@ def make_classifier_window():
 def make_generator_window():
 
     generatorLayout = [[sg.Multiline('', autoscroll=True, key='Generator', expand_x=True, expand_y=True)],
-                    [sg.Button('Generate'), sg.Button('<|sepofcond|>')]]
+                    [sg.Button('Generate'), sg.Button('<|sepofcond|>'), sg.Frame('Controls', [[sg.Text("num_beams:"), sg.Slider(range=(1, 10), default_value=1, expand_x=True, expand_y=True, orientation='h', resolution=1, key='Beams Slider')],
+                                                                                              [sg.Checkbox("do_sample:", key='Sample Box')],
+                                                                                              [sg.Text("top_k:"), sg.Slider(range=(1, 100), default_value=1, expand_x=True, expand_y=True, orientation='h', resolution=1, key='TopK Slider')],
+                                                                                              [sg.Text("top_p:"), sg.Slider(range=(0.00, 1.00), default_value=1.00, expand_x=True, expand_y=True, orientation='h', resolution=0.01, key='TopP Slider')],
+                                                                                              [sg.Text("length:"), sg.Slider(range=(1, 500), default_value=1, expand_x=True, expand_y=True, orientation='h', resolution=1, key='Length Slider')],
+                                                                                              [sg.Text("repetition penalty:"), sg.Slider(range=(1.0, 2.0), default_value=1.00, expand_x=True, expand_y=True, orientation='h', resolution=0.1, key='RP Slider')],
+                                                                                              [sg.Text("no_repeat_ngram:"), sg.Slider(range=(1, 10), default_value=1, expand_x=True, expand_y=True, orientation='h', resolution=1, key='Ngram Slider')],
+                                                                                              [sg.Text("temp:"), sg.Slider(range=(0.00, 2.00), default_value=1.00, expand_x=True, expand_y=True, orientation='h', resolution=0.01, key='temp Slider')]])]]
 
     return sg.Window('Gpt2', generatorLayout, resizable=True, finalize=True, auto_size_text=True)
 
@@ -233,7 +365,7 @@ while True:
 
     if window == generatorWindow and event == 'Generate':
 
-        generatorWindow["Generator"].update(run_generator(values["Generator"], args))
+        generatorWindow["Generator"].update(run_generator(values["Generator"], args, values["Beams Slider"], values["Sample Box"], values["TopK Slider"], values["TopP Slider"], values["Length Slider"], values["RP Slider"], values["Ngram Slider"], values["temp Slider"]))
 
     elif window == generatorWindow and event == '<|sepofcond|>':
         generatorWindow['Generator'].Widget.insert(generatorWindow['Generator'].Widget.index(tk.INSERT), '<|sepofcond|>')
