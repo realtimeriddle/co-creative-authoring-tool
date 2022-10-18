@@ -9,7 +9,9 @@ import tkinter as tk
 import torch
 import argparse
 
+
 def run_classifier(inputText, candidate_labels, outputLabels, hypothesis_template, threshold, multilabel, args):
+    # Runs Zero-shot Classification
 
     outputText = ''
 
@@ -34,6 +36,9 @@ def run_classifier(inputText, candidate_labels, outputLabels, hypothesis_templat
 
 
 def run_generator(inText, args, num_beams, do_sample, top_k, top_p, length, repetition_penalty, no_repeat_ngram_size, temperature):
+    # Runs Causal Text Generation
+
+    ENCODED_MAX = 750
 
     tokenizer = AutoTokenizer.from_pretrained("models/gpt2_stage0")
 
@@ -41,6 +46,16 @@ def run_generator(inText, args, num_beams, do_sample, top_k, top_p, length, repe
 
     if inText == '':
         inText = '<|endoftext|>'
+
+    temp_encoded = tokenizer.encode(inText)
+
+    if len(temp_encoded) > ENCODED_MAX:
+        temp_encoded = temp_encoded[-ENCODED_MAX:]
+
+    if len(temp_encoded) + length > 1024:
+        length = 1024 - len(temp_encoded)
+
+    inText = tokenizer.decode(temp_encoded)
 
     encoded_text = tokenizer.encode(inText, add_special_tokens=False, return_tensors="pt")
 
@@ -60,8 +75,9 @@ def run_generator(inText, args, num_beams, do_sample, top_k, top_p, length, repe
     return outText
 
 def run_progressive_generation(inputStr, args):
-    ENCODED_MAX = 100
-    startingPoint = 0
+    # Runs MultiStage Text to Text Generation
+
+    ENCODED_MAX = 1024
 
     tokenizer1 = BartTokenizer.from_pretrained('models/bart_stage1')
     model1 = BartForConditionalGeneration.from_pretrained('models/bart_stage1', low_cpu_mem_usage=True)
@@ -69,151 +85,51 @@ def run_progressive_generation(inputStr, args):
     tokenizer2 = BartTokenizer.from_pretrained('models/bart_stage2')
     model2 = BartForConditionalGeneration.from_pretrained('models/bart_stage2', low_cpu_mem_usage=True)
 
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
+        model1.to('cuda')
+        model2.to('cuda')
+
+    # encoding the prompt first just to check the length
     temp_encoded = tokenizer1.encode(inputStr, add_special_tokens=False)
 
-    if len(temp_encoded) <= ENCODED_MAX and \
-            (tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0] in temp_encoded or \
-             tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0] in temp_encoded):
+    #check if string is too long for model
+    if len(temp_encoded) <= ENCODED_MAX:
 
-        inputs1 = tokenizer1.batch_encode_plus(['<|startofcond|>'+inputStr], return_tensors='pt')
+        # first stage
+
+        inputs1 = tokenizer1.batch_encode_plus([inputStr], return_tensors='pt')
 
         if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
-            model1 = model1.to(torch.cuda.current_device())
-            inputs1 = inputs1.to(torch.cuda.current_device())
+            inputs1 = inputs1.to('cuda')
 
-        output_ids = model1.generate(inputs1['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
+        output_ids = model1.generate(inputs1['input_ids'], num_beams=4, early_stopping=True, max_length=1024)
 
-        text = tokenizer1.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace('<s>', '')
+        text = tokenizer1.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace(
+            '<s>',
+            '')
+
+        # second stage
 
         inputs2 = tokenizer2.batch_encode_plus([text], return_tensors='pt')
 
         if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
-            model2 = model2.to(torch.cuda.current_device())
-            inputs2 = inputs2.to(torch.cuda.current_device())
+            inputs2 = inputs2.to('cuda')
 
-        output_ids = model2.generate(inputs2['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
+        output_ids = model2.generate(inputs2['input_ids'], num_beams=4, early_stopping=True, max_length=1024)
 
-        outStr = tokenizer2.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace('<s>', '')
-
-        return outStr
-
-    elif len(temp_encoded) > ENCODED_MAX and \
-            (tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0] in temp_encoded or \
-             tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0] in temp_encoded):
-
-        while tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0] in temp_encoded or \
-                tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0] in temp_encoded:
-
-            toProcess = None
-            beginning = None
-
-            if (tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0] in temp_encoded and \
-                    tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0] in temp_encoded):
-
-                if temp_encoded.index(tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0]) < \
-                        temp_encoded.index(tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0]):
-
-                    startingPoint = temp_encoded.index(
-                        tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0])
-
-                else:
-                    startingPoint = temp_encoded.index(
-                        tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0])
-
-            elif tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0] in temp_encoded:
-
-                startingPoint = temp_encoded.index(
-                    tokenizer1.encode("<|startofcond|>", add_special_tokens=False)[0])
-
-            elif tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0] in temp_encoded:
-
-                startingPoint = temp_encoded.index(
-                    tokenizer1.encode("<|sepofcond|>", add_special_tokens=False)[0])
-
-            if startingPoint <= ENCODED_MAX / 2:
-                toProcess = temp_encoded[:ENCODED_MAX]
-                temp_encoded = temp_encoded[ENCODED_MAX:]
-
-            else:
-
-                if len(temp_encoded) <= (startingPoint + 1 + (ENCODED_MAX / 2)):
-                    beginning = temp_encoded[:int(startingPoint - (ENCODED_MAX / 2))]
-                    toProcess = temp_encoded[int(startingPoint - (ENCODED_MAX / 2)):]
-                    temp_encoded = None
-                else:
-                    beginning = temp_encoded[:int(startingPoint - (ENCODED_MAX / 2))]
-                    print(int(startingPoint - (ENCODED_MAX / 2)))
-                    print((startingPoint + (ENCODED_MAX / 2)))
-                    print(temp_encoded)
-                    toProcess = temp_encoded[int(startingPoint - (ENCODED_MAX / 2)):int(startingPoint + (ENCODED_MAX / 2))]
-                    temp_encoded = temp_encoded[int(startingPoint + (ENCODED_MAX / 2)):]
-
-            text = tokenizer1.decode(toProcess)
-
-            inputs1 = tokenizer1.batch_encode_plus(['<|startofcond|>' + text], return_tensors='pt')
-
-            if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
-                model1 = model1.to(torch.cuda.current_device())
-                inputs1 = inputs1.to(torch.cuda.current_device())
-
-            output_ids = model1.generate(inputs1['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
-
-            text = tokenizer1.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace(
-                '<s>', '')
-
-            inputs2 = tokenizer2.batch_encode_plus([text], return_tensors='pt')
-
-            if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
-                model2 = model2.to(torch.cuda.current_device())
-                inputs2 = inputs2.to(torch.cuda.current_device())
-
-            output_ids = model2.generate(inputs2['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
-
-            out = tokenizer2.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace(
-                '<s>', '')
-
-            if beginning is not None and temp_encoded is not None:
-                temp_encoded = beginning + tokenizer1.encode(out, add_special_tokens=False) + temp_encoded
-            elif beginning is not None and temp_encoded is None:
-                temp_encoded = beginning + tokenizer1.encode(out, add_special_tokens=False)
-            elif beginning is None and temp_encoded is not None:
-                temp_encoded = tokenizer1.encode(out, add_special_tokens=False) + temp_encoded
-
-        outStr = tokenizer1.decode(temp_encoded)
-
-        return outStr
+        outStr = tokenizer2.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace(
+            '<s>',
+            '')
 
     else:
-        if len(temp_encoded) > ENCODED_MAX:
-            temp_encoded = temp_encoded[-ENCODED_MAX:]
+        #if string is too long return original Text and print error
+        outStr = inputStr
+        print("Error: Text length", len(temp_encoded))
 
-        inputStr = tokenizer1.decode(temp_encoded)
-
-        inputs1 = tokenizer1.batch_encode_plus(['<|startofcond|>' + inputStr], return_tensors='pt')
-
-        if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
-            model1 = model1.to(torch.cuda.current_device())
-            inputs1 = inputs1.to(torch.cuda.current_device())
-
-        output_ids = model1.generate(inputs1['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
-
-        text = tokenizer1.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace('<s>',
-                                                                                                               '')
-
-        inputs2 = tokenizer2.batch_encode_plus([text], return_tensors='pt')
-
-        if torch.cuda.is_available() and torch.cuda.device_count() > 0 and not args.no_cuda:
-            model2 = model2.to(torch.cuda.current_device())
-            inputs2 = inputs2.to(torch.cuda.current_device())
-
-        output_ids = model2.generate(inputs2['input_ids'], num_beams=2, early_stopping=False, max_length=1024)
-
-        outStr = tokenizer2.decode(output_ids[0], clean_up_tokenization_spaces=True).replace('</s>', '').replace('<s>',
-                                                                                                                 '')
-
-        return outStr
+    return outStr
 
 
+########## Functions that build window layouts for PySimpleGUI
 
 def make_classifier_window():
     classifier_Layout = [[sg.Multiline('', autoscroll=True, key='Classifier Output', expand_x=True, expand_y=True, disabled=False), sg.Listbox([], expand_x=True, expand_y=True, enable_events=True, key="Classifier ListBox")],
@@ -251,32 +167,30 @@ def make_editor_window():
     return sg.Window('Editor', editorLayout, resizable=True, finalize=True, auto_size_text=True)
 
 
+##########
+
+######### Checks for arguments
 # taken from the transformers library
 parser = argparse.ArgumentParser()
 
 parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
 args = parser.parse_args()
 
+###########
+
+##########PySimpleGUI setup
 sg.theme('DarkBlue')   # Add a touch of color
-
-# Variables
-
-numAttrib = 1
-numChar = 1
-numLabels = 1
-
-attributesTypes = ['text', 'combo', 'bool', "list", "slider"]
-
-storyStructure = []
 
 classifierWindow = make_classifier_window()
 generatorWindow = make_generator_window()
 traceryWindow = make_tracery_window()
 editorWindow = make_editor_window()
+##########
 
+# Folder location for the lists used by the classifier
 listDir = 'Lists'
 
-# Main loop
+# PySimpleGUI Main loop
 while True:
 
 # read events
