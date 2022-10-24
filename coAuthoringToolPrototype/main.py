@@ -47,7 +47,9 @@ def run_generator(inText, args, num_beams, do_sample, top_k, top_p, length, repe
     if inText == '':
         inText = '<|endoftext|>'
 
+
     temp_encoded = tokenizer.encode(inText)
+
 
     if len(temp_encoded) > ENCODED_MAX:
         temp_encoded = temp_encoded[-ENCODED_MAX:]
@@ -70,7 +72,9 @@ def run_generator(inText, args, num_beams, do_sample, top_k, top_p, length, repe
     if len(generated_text.shape) > 2:
         generated_text.squeeze_()
 
-    outText = tokenizer.decode(generated_text[0])
+    prompt_length = len(tokenizer.encode(inText))
+
+    outText = tokenizer.decode(generated_text[0][prompt_length:])
 
     return outText
 
@@ -156,7 +160,10 @@ def make_generator_window():
 
 def make_tracery_window():
     traceryLayout = [[sg.Multiline('{\n\t"origin\": []\n}', autoscroll=True, key='Tracery Editor', expand_x=True, expand_y=True)],
-                    [sg.Button('<|sepofcond|>'), sg.Button('Run'), sg.Text("origin:"), sg.Input(expand_x=True, key='Grammar Origin')]]
+                    [sg.Button('<|sepofcond|>'), sg.Button('Run'), sg.Text("origin:"),
+                     sg.Input(expand_x=True, key='Grammar Origin'), sg.Text('Load'),
+                     sg.Combo([], key='TraceryCombo', expand_x=True, enable_events=True), sg.Button('Save'),
+                     sg.Input(expand_x=True, key='SaveGrammarName')]]
 
     return sg.Window('Tracery', traceryLayout, resizable=True, finalize=True, auto_size_text=True)
 
@@ -189,6 +196,9 @@ editorWindow = make_editor_window()
 
 # Folder location for the lists used by the classifier
 listDir = 'Lists'
+
+# Folder location for the grammars used by the tracery window
+grammarDir = 'Grammars'
 
 # PySimpleGUI Main loop
 while True:
@@ -279,12 +289,23 @@ while True:
 
     if window == generatorWindow and event == 'Generate':
 
-        generatorWindow["Generator"].update(run_generator(values["Generator"], args, values["Beams Slider"], values["Sample Box"], values["TopK Slider"], values["TopP Slider"], values["Length Slider"], values["RP Slider"], values["Ngram Slider"], values["temp Slider"]))
+        generatorWindow['Generator'].Widget.insert(generatorWindow['Generator'].Widget.index(tk.INSERT),
+                                                   run_generator(generatorWindow['Generator'].Widget.get("1.0", generatorWindow['Generator'].Widget.index(tk.INSERT)), args, values["Beams Slider"], values["Sample Box"], values["TopK Slider"], values["TopP Slider"], values["Length Slider"], values["RP Slider"], values["Ngram Slider"], values["temp Slider"]))
 
     elif window == generatorWindow and event == '<|sepofcond|>':
         generatorWindow['Generator'].Widget.insert(generatorWindow['Generator'].Widget.index(tk.INSERT), '<|sepofcond|>')
 
 # Tracery Events
+
+    #update save grammar list
+
+    grammarFiles = []
+    for f in listdir(grammarDir):
+        if isfile(join(grammarDir, f)):
+            grammarFiles.append(f)
+
+    traceryWindow["TraceryCombo"].update(values=grammarFiles)
+
 
     if window == traceryWindow and event == 'Run':
 
@@ -300,7 +321,19 @@ while True:
     elif window == traceryWindow and event == '<|sepofcond|>':
         traceryWindow['Tracery Editor'].Widget.insert(traceryWindow['Tracery Editor'].Widget.index(tk.INSERT), '<|sepofcond|>')
 
+    elif window == traceryWindow and event == 'Save':
+        outfile = open(join(grammarDir, values['SaveGrammarName'] + ".json"), "w")
+        outfile.write(values["Tracery Editor"])
+        outfile.close()
 
+
+    elif window == traceryWindow and event == 'TraceryCombo' and len(values['TraceryCombo']):
+
+        f = open(grammarDir+'\\'+values['TraceryCombo'])
+
+        traceryWindow['Tracery Editor'].update(f.read())
+
+        f.close()
 
 # Text editor Events
 
